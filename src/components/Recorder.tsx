@@ -14,33 +14,45 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
   const [status, setStatus] = useState('')
   const [meetingDetected, setMeetingDetected] = useState<string[]>([])
   const [activeMeetingApp, setActiveMeetingApp] = useState<string | undefined>(undefined)
+  const [useLocal, setUseLocal] = useState(false)
+  const [whisperAvailable, setWhisperAvailable] = useState(false)
+  const [liveTranscript, setLiveTranscript] = useState('')
+  const [isStreaming, setIsStreaming] = useState(false)
 
   const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const meetingCheckRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const streamingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
   const micStreamRef = useRef<MediaStream | null>(null)
   const pcmChunksRef = useRef<Float32Array[]>([])
+  const streamChunksRef = useRef<Float32Array[]>([])
+  const liveTranscriptRef = useRef<string>('')
+  const sampleRateRef = useRef<number>(44100)
+
+  // Check whisper availability on mount
+  useEffect(() => {
+    window.electron.checkWhisper().then((result) => {
+      setWhisperAvailable(result.available)
+    })
+  }, [])
 
   // Poll for meeting detection every 5 seconds
   useEffect(() => {
     const checkMeeting = async () => {
       const result = await window.electron.detectMeeting()
       setMeetingDetected(result.apps)
-      if (result.apps.length > 0) {
-        setActiveMeetingApp(result.apps[0])
-      }
+      if (result.apps.length > 0) setActiveMeetingApp(result.apps[0])
     }
     checkMeeting()
     meetingCheckRef.current = setInterval(checkMeeting, 5000)
-    return () => {
-      if (meetingCheckRef.current) clearInterval(meetingCheckRef.current)
-    }
+    return () => { if (meetingCheckRef.current) clearInterval(meetingCheckRef.current) }
   }, [])
 
   useEffect(() => {
     return () => {
       if (timerIntervalRef.current) clearInterval(timerIntervalRef.current)
+      if (streamingIntervalRef.current) clearInterval(streamingIntervalRef.current)
       cleanupAudio()
     }
   }, [])
@@ -103,37 +115,82 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
     view.setUint16(34, 16, true)
     writeStr(36, 'data')
     view.setUint32(40, samples.length * 2, true)
-    for (let i = 0; i < samples.length; i++) {
-      view.setInt16(44 + i * 2, samples[i], true)
-    }
+    for (let i = 0; i < samples.length; i++) view.setInt16(44 + i * 2, samples[i], true)
     return new Blob([view], { type: 'audio/wav' })
+  }
+
+  const buildWavBase64 = (chunks: Float32Array[], sampleRate: number): Promise<string> => {
+    return new Promise((resolve) => {
+      const full = flattenChunks(chunks)
+      const resampled = resample(full, sampleRate, 16000)
+      const pcm16 = float32ToInt16(resampled)
+      const blob = encodeWav(pcm16, 16000)
+      const reader = new FileReader()
+      reader.onloadend = () => resolve(reader.result as string)
+      reader.readAsDataURL(blob)
+    })
+  }
+
+  // Stream chunk every 5 seconds during recording
+  const startStreamingChunks = () => {
+    setIsStreaming(true)
+    streamChunksRef.current = []
+
+    streamingIntervalRef.current = setInterval(async () => {
+      const chunks = [...streamChunksRef.current]
+      streamChunksRef.current = [] // reset for next chunk
+
+      if (chunks.length === 0) return
+
+      try {
+        const base64 = await buildWavBase64(chunks, sampleRateRef.current)
+        const result = useLocal
+          ? await window.electron.transcribeLocal(base64)
+          : await window.electron.transcribeChunk(base64, settings.apiKey, false)
+
+        if (result.success && result.text) {
+          liveTranscriptRef.current += result.text + ' '
+          setLiveTranscript(liveTranscriptRef.current)
+        }
+      } catch (e) {
+        console.error('Chunk transcription error:', e)
+      }
+    }, 5000)
   }
 
   const startRecording = async () => {
     if (isRecording || isTranscribing) return
-    if (!settings.apiKey) {
+    if (!useLocal && !settings.apiKey) {
       setStatus('⚠️ Please add your OpenRouter API key in Settings first')
       return
     }
 
     try {
       setStatus('')
+      liveTranscriptRef.current = ''
+      setLiveTranscript('')
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
       micStreamRef.current = stream
 
       const context = new AudioContext()
       audioContextRef.current = context
+      sampleRateRef.current = context.sampleRate
       const source = context.createMediaStreamSource(stream)
       const processor = context.createScriptProcessor(4096, 1, 1)
       processorRef.current = processor
       pcmChunksRef.current = []
 
       processor.onaudioprocess = (e) => {
-        pcmChunksRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)))
+        const data = new Float32Array(e.inputBuffer.getChannelData(0))
+        pcmChunksRef.current.push(data)
+        streamChunksRef.current.push(data)
       }
 
       source.connect(processor)
       processor.connect(context.destination)
+
+      startStreamingChunks()
 
       setIsRecording(true)
       setElapsed(0)
@@ -147,47 +204,50 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
   const stopRecording = async () => {
     if (!isRecording) return
     if (timerIntervalRef.current) { clearInterval(timerIntervalRef.current); timerIntervalRef.current = null }
+    if (streamingIntervalRef.current) { clearInterval(streamingIntervalRef.current); streamingIntervalRef.current = null }
 
     setIsRecording(false)
-    setStatus('Processing audio...')
+    setIsStreaming(false)
+    setStatus('Processing final audio...')
 
-    const sampleRate = audioContextRef.current?.sampleRate || 44100
+    const sampleRate = sampleRateRef.current
     const chunks = [...pcmChunksRef.current]
     cleanupAudio()
     pcmChunksRef.current = []
 
     if (chunks.length === 0) { setStatus('❌ No audio captured.'); return }
 
-    const fullPcm = flattenChunks(chunks)
-    const resampled = resample(fullPcm, sampleRate, 16000)
-    const pcm16 = float32ToInt16(resampled)
-    const wavBlob = encodeWav(pcm16, 16000)
-
-    setStatus('⏳ Transcribing...')
     setIsTranscribing(true)
 
     try {
-      const reader = new FileReader()
-      reader.onloadend = async () => {
-        try {
-          const base64 = reader.result as string
-          const text = await window.electron.transcribeAudio(base64, settings.apiKey, activeMeetingApp)
-          if (text && text.trim()) {
-            await window.electron.saveTranscript(text, activeMeetingApp)
-            onTranscriptsUpdate()
-            setStatus('✅ Transcription complete!')
-          } else {
-            setStatus('⚠️ No speech detected.')
-          }
-        } catch (err: unknown) {
-          setStatus(`❌ Transcription failed: ${err instanceof Error ? err.message : String(err)}`)
-        } finally {
-          setIsTranscribing(false)
+      // Use accumulated live transcript + final pass
+      let finalText = liveTranscriptRef.current.trim()
+
+      if (!finalText) {
+        // Fallback: transcribe full recording if streaming got nothing
+        setStatus('⏳ Transcribing full recording...')
+        const base64 = await buildWavBase64(chunks, sampleRate)
+
+        if (useLocal) {
+          const result = await window.electron.transcribeLocal(base64)
+          finalText = result.success ? result.text : ''
+        } else {
+          finalText = await window.electron.transcribeAudio(base64, settings.apiKey, activeMeetingApp)
         }
       }
-      reader.readAsDataURL(wavBlob)
+
+      if (finalText) {
+        await window.electron.saveTranscript(finalText, activeMeetingApp)
+        onTranscriptsUpdate()
+        setStatus('✅ Transcription complete!')
+        setLiveTranscript('')
+        liveTranscriptRef.current = ''
+      } else {
+        setStatus('⚠️ No speech detected.')
+      }
     } catch (err: unknown) {
-      setStatus(`❌ Error: ${err instanceof Error ? err.message : String(err)}`)
+      setStatus(`❌ Transcription failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
       setIsTranscribing(false)
     }
   }
@@ -206,11 +266,27 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
       {meetingDetected.length > 0 && (
         <div className="meeting-banner">
           <span className="meeting-dot"></span>
-          <span>
-            {meetingDetected.join(', ')} detected — ready to record
-          </span>
+          <span>{meetingDetected.join(', ')} detected — ready to record</span>
         </div>
       )}
+
+      {/* Transcription Mode Toggle */}
+      <div className="mode-toggle">
+        <button
+          className={`mode-btn ${!useLocal ? 'active' : ''}`}
+          onClick={() => setUseLocal(false)}
+        >
+          ☁️ Cloud (OpenRouter)
+        </button>
+        <button
+          className={`mode-btn ${useLocal ? 'active' : ''}`}
+          onClick={() => setUseLocal(true)}
+          disabled={!whisperAvailable}
+          title={!whisperAvailable ? 'Local Whisper not available' : ''}
+        >
+          💻 Local (Whisper){!whisperAvailable ? ' — installing...' : ''}
+        </button>
+      </div>
 
       <div className="record-section">
         <button
@@ -226,10 +302,19 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
           <div className="recording-indicator">
             <span className="pulse-dot"></span>
             <span>{formatTime(elapsed)}</span>
+            {isStreaming && <span className="streaming-label">● Live</span>}
           </div>
         )}
 
         {status && <div className="status-msg">{status}</div>}
+
+        {/* Live streaming transcript */}
+        {liveTranscript && (
+          <div className="live-transcript">
+            <div className="live-label">🎙 Live transcript</div>
+            <p>{liveTranscript}</p>
+          </div>
+        )}
       </div>
 
       <div className="transcripts-section">
@@ -244,9 +329,7 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
               <div key={t.id} className="transcript-card">
                 <div className="transcript-header">
                   <span className="transcript-date">{new Date(t.timestamp).toLocaleString()}</span>
-                  {t.meetingApp && (
-                    <span className="meeting-badge">{t.meetingApp}</span>
-                  )}
+                  {t.meetingApp && <span className="meeting-badge">{t.meetingApp}</span>}
                 </div>
                 <p className="transcript-text">{t.text}</p>
               </div>

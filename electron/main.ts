@@ -19,9 +19,10 @@ let win: BrowserWindow | null
 const STORAGE_DIR = path.join(app.getPath('documents'), 'SentraApp')
 const TRANSCRIPTS_DIR = path.join(STORAGE_DIR, 'transcripts')
 const SETTINGS_PATH = path.join(STORAGE_DIR, 'settings.json')
+const WHISPER_MODELS_DIR = path.join(STORAGE_DIR, 'whisper-models')
 
 function ensureDirectories() {
-  ;[STORAGE_DIR, TRANSCRIPTS_DIR].forEach((dir) => {
+  ;[STORAGE_DIR, TRANSCRIPTS_DIR, WHISPER_MODELS_DIR].forEach((dir) => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   })
 }
@@ -67,76 +68,96 @@ ipcMain.handle('get-desktop-sources', async () => {
 })
 
 // ─── Meeting Detection ────────────────────────────────────────────────────────
-// Detect if Zoom, Google Meet, Teams, or Webex is currently running
 
 ipcMain.handle('detect-meeting', async () => {
   try {
     const { stdout } = await execAsync('ps aux')
     const processes = stdout.toLowerCase()
-
     const meetingApps = [
       { name: 'Zoom', keywords: ['zoom.us', 'zoom meeting'] },
-      { name: 'Google Meet', keywords: ['meet.google', 'chrome --app=https://meet'] },
+      { name: 'Google Meet', keywords: ['meet.google', 'google meet'] },
       { name: 'Microsoft Teams', keywords: ['teams', 'msteams'] },
       { name: 'Webex', keywords: ['webex', 'ciscowebex'] },
       { name: 'Discord', keywords: ['discord'] },
       { name: 'Slack', keywords: ['slack'] },
     ]
+    const detected = meetingApps.filter((a) => a.keywords.some((kw) => processes.includes(kw)))
+    const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 } })
+    const titles = sources.map((s) => s.name.toLowerCase())
+    if (titles.some((t) => t.includes('zoom')) && !detected.find((d) => d.name === 'Zoom')) detected.push({ name: 'Zoom', keywords: [] })
+    if (titles.some((t) => t.includes('google meet')) && !detected.find((d) => d.name === 'Google Meet')) detected.push({ name: 'Google Meet', keywords: [] })
+    if (titles.some((t) => t.includes('microsoft teams')) && !detected.find((d) => d.name === 'Microsoft Teams')) detected.push({ name: 'Microsoft Teams', keywords: [] })
+    return { isInMeeting: detected.length > 0, apps: detected.map((d) => d.name) }
+  } catch { return { isInMeeting: false, apps: [] } }
+})
 
-    const detected = meetingApps.filter((app) =>
-      app.keywords.some((kw) => processes.includes(kw))
-    )
+// ─── Local Whisper Transcription ──────────────────────────────────────────────
 
-    // Also check window titles via desktop capturer
-    const sources = await desktopCapturer.getSources({
-      types: ['window'],
-      thumbnailSize: { width: 0, height: 0 },
-    })
-
-    const windowTitles = sources.map((s) => s.name.toLowerCase())
-    const zoomWindow = windowTitles.some((t) => t.includes('zoom') || t.includes('meeting'))
-    const meetWindow = windowTitles.some((t) => t.includes('meet') || t.includes('google meet'))
-    const teamsWindow = windowTitles.some((t) => t.includes('teams') || t.includes('microsoft teams'))
-
-    if (zoomWindow && !detected.find((d) => d.name === 'Zoom')) detected.push({ name: 'Zoom', keywords: [] })
-    if (meetWindow && !detected.find((d) => d.name === 'Google Meet')) detected.push({ name: 'Google Meet', keywords: [] })
-    if (teamsWindow && !detected.find((d) => d.name === 'Microsoft Teams')) detected.push({ name: 'Microsoft Teams', keywords: [] })
-
-    return {
-      isInMeeting: detected.length > 0,
-      apps: detected.map((d) => d.name),
-    }
-  } catch (error) {
-    return { isInMeeting: false, apps: [] }
+ipcMain.handle('check-whisper', async () => {
+  try {
+    const { nodewhisper } = await import('nodejs-whisper')
+    return { available: true }
+  } catch {
+    return { available: false }
   }
 })
 
-// ─── Transcription with Speaker Detection ────────────────────────────────────
+ipcMain.handle('transcribe-local', async (_event, base64Audio: string) => {
+  try {
+    const audioData = base64Audio.includes(',') ? base64Audio.split(',')[1] : base64Audio
+    const audioBuffer = Buffer.from(audioData, 'base64')
+
+    // Save WAV temporarily
+    const tmpPath = path.join(STORAGE_DIR, `tmp_${Date.now()}.wav`)
+    fs.writeFileSync(tmpPath, audioBuffer)
+
+    const { nodewhisper } = await import('nodejs-whisper')
+    const result = await nodewhisper(tmpPath, {
+      modelName: 'base.en',
+      autoDownloadModelName: 'base.en',
+      whisperOptions: {
+        outputInText: true,
+        translateToEnglish: false,
+        wordTimestamps: false,
+      },
+    })
+
+    // Cleanup temp file
+    fs.unlinkSync(tmpPath)
+
+    const text = typeof result === 'string' ? result : result?.map((r: any) => r.speech).join(' ')
+    return { success: true, text: text?.trim() || '' }
+  } catch (error) {
+    console.error('Local whisper error:', error)
+    return { success: false, error: String(error) }
+  }
+})
+
+// ─── OpenRouter Transcription (fallback) ─────────────────────────────────────
 
 ipcMain.handle('transcribe-audio', async (_event, base64Audio: string, apiKey: string, meetingApp?: string) => {
   try {
     const audioData = base64Audio.includes(',') ? base64Audio.split(',')[1] : base64Audio
-    console.log('Transcribing WAV, base64 length:', audioData.length)
+    console.log('Using API key:', apiKey ? apiKey.substring(0, 20) + '...' : 'EMPTY')
 
     const speakerPrompt = meetingApp
-      ? `Transcribe this audio from a ${meetingApp} meeting. If you can identify different speakers, label them as "Speaker 1:", "Speaker 2:", etc. Return only the transcription.`
-      : 'Transcribe this audio exactly as spoken. If multiple speakers are present, label them as "Speaker 1:", "Speaker 2:", etc. Return only the transcription text.'
+      ? `Transcribe this audio from a ${meetingApp} meeting. Label different speakers as "Speaker 1:", "Speaker 2:", etc. Return only the transcription.`
+      : 'Transcribe this audio. If multiple speakers, label them as "Speaker 1:", "Speaker 2:", etc. Return only the transcription.'
 
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://sentra.app',
+        'X-Title': 'Sentra Meeting Intelligence',
       },
       body: JSON.stringify({
         model: 'openai/gpt-4o-audio-preview',
         messages: [{
           role: 'user',
           content: [
-            {
-              type: 'input_audio',
-              input_audio: { data: audioData, format: 'wav' },
-            },
+            { type: 'input_audio', input_audio: { data: audioData, format: 'wav' } },
             { type: 'text', text: speakerPrompt },
           ],
         }],
@@ -145,17 +166,57 @@ ipcMain.handle('transcribe-audio', async (_event, base64Audio: string, apiKey: s
 
     const rawText = await response.text()
     console.log('Transcription status:', response.status)
-    console.log('Transcription response:', rawText.substring(0, 400))
-
     if (!response.ok) throw new Error(`API error ${response.status}: ${rawText.substring(0, 300)}`)
-
     const data = JSON.parse(rawText)
     if (data.error) throw new Error(JSON.stringify(data.error))
-
     return data.choices?.[0]?.message?.content?.trim() || ''
   } catch (error) {
     console.error('Transcription error:', error)
     throw error
+  }
+})
+
+// ─── Streaming chunk transcription ───────────────────────────────────────────
+// Called every 5s with a chunk — sends result back via IPC event
+
+ipcMain.handle('transcribe-chunk', async (_event, base64Audio: string, apiKey: string, useLocal: boolean) => {
+  try {
+    if (useLocal) {
+      const result = await new Promise<{ success: boolean; text: string; error?: string }>((resolve) => {
+        ipcMain.emit('transcribe-local', { sender: { send: () => {} } }, base64Audio)
+        resolve({ success: true, text: '' })
+      })
+      return result
+    }
+
+    // Use OpenRouter for chunk
+    const audioData = base64Audio.includes(',') ? base64Audio.split(',')[1] : base64Audio
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://sentra.app',
+        'X-Title': 'Sentra Meeting Intelligence',
+      },
+      body: JSON.stringify({
+        model: 'openai/gpt-4o-audio-preview',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'input_audio', input_audio: { data: audioData, format: 'wav' } },
+            { type: 'text', text: 'Transcribe this audio chunk exactly. Return only the words spoken, nothing else.' },
+          ],
+        }],
+      }),
+    })
+
+    if (!response.ok) return { success: false, text: '', error: `${response.status}` }
+    const data = await response.json()
+    const text = data.choices?.[0]?.message?.content?.trim() || ''
+    return { success: true, text }
+  } catch (error) {
+    return { success: false, text: '', error: String(error) }
   }
 })
 
@@ -165,19 +226,11 @@ ipcMain.handle('save-transcript', async (_event, text: string, meetingApp?: stri
   try {
     ensureDirectories()
     const timestamp = new Date().toISOString()
-    const data = {
-      id: Date.now().toString(),
-      timestamp,
-      text: String(text),
-      meetingApp: meetingApp || null,
-    }
+    const data = { id: Date.now().toString(), timestamp, text: String(text), meetingApp: meetingApp || null }
     const filename = `transcript_${timestamp.replace(/[:.]/g, '-')}.json`
     fs.writeFileSync(path.join(TRANSCRIPTS_DIR, filename), JSON.stringify(data, null, 2))
     return true
-  } catch (error) {
-    console.error('Save transcript error:', error)
-    return false
-  }
+  } catch { return false }
 })
 
 // ─── Load Transcripts ─────────────────────────────────────────────────────────
@@ -206,10 +259,7 @@ ipcMain.handle('load-transcripts', async () => {
 // ─── Knowledge Base ───────────────────────────────────────────────────────────
 
 ipcMain.handle('select-kb-folder', async () => {
-  const result = await dialog.showOpenDialog(win!, {
-    properties: ['openDirectory'],
-    title: 'Select Knowledge Base Folder',
-  })
+  const result = await dialog.showOpenDialog(win!, { properties: ['openDirectory'], title: 'Select Knowledge Base Folder' })
   return (!result.canceled && result.filePaths.length > 0) ? result.filePaths[0] : null
 })
 
@@ -218,10 +268,7 @@ ipcMain.handle('load-kb-files', async (_event, folderPath: string) => {
     if (!folderPath || !fs.existsSync(folderPath)) return []
     return fs.readdirSync(folderPath)
       .filter((f) => f.endsWith('.md') || f.endsWith('.txt'))
-      .map((file) => ({
-        name: file,
-        content: fs.readFileSync(path.join(folderPath, file), 'utf-8'),
-      }))
+      .map((file) => ({ name: file, content: fs.readFileSync(path.join(folderPath, file), 'utf-8') }))
   } catch { return [] }
 })
 
@@ -245,9 +292,7 @@ ipcMain.handle('claude-chat', async (_event,
     }
     if (kbFiles.length > 0) {
       context += 'KNOWLEDGE BASE:\n\n'
-      kbFiles.forEach((kb) => {
-        context += `--- ${kb.name} ---\n${kb.content.slice(0, 2000)}\n\n`
-      })
+      kbFiles.forEach((kb) => { context += `--- ${kb.name} ---\n${kb.content.slice(0, 2000)}\n\n` })
     }
 
     const systemPrompt = `You are Sentra, an AI assistant that helps users understand their meeting transcripts and knowledge base. Be concise and helpful.${context ? `\n\nContext:\n${context}` : ''}`
@@ -257,14 +302,12 @@ ipcMain.handle('claude-chat', async (_event,
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://sentra.app',
+        'X-Title': 'Sentra Meeting Intelligence',
       },
       body: JSON.stringify({
         model: 'anthropic/claude-sonnet-4-5',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          ...history,
-          { role: 'user', content: message },
-        ],
+        messages: [{ role: 'system', content: systemPrompt }, ...history, { role: 'user', content: message }],
       }),
     })
 
@@ -280,34 +323,22 @@ ipcMain.handle('claude-chat', async (_event,
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
 ipcMain.handle('save-settings', async (_event, settings: Record<string, string>) => {
-  try {
-    ensureDirectories()
-    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2))
-    return true
-  } catch { return false }
+  try { ensureDirectories(); fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2)); return true }
+  catch { return false }
 })
 
 ipcMain.handle('load-settings', async () => {
-  const defaults = {
-    apiKey: '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',
-    kbFolderPath: '',
-  }
+  const defaults = { apiKey: '', kbFolderPath: '', useLocalWhisper: 'false' }
   try {
-    if (fs.existsSync(SETTINGS_PATH)) {
-      return { ...defaults, ...JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8')) }
-    }
+    if (fs.existsSync(SETTINGS_PATH)) return { ...defaults, ...JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8')) }
   } catch {}
   return defaults
 })
 
 // ─── App Lifecycle ────────────────────────────────────────────────────────────
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') { app.quit(); win = null }
-})
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow()
-})
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') { app.quit(); win = null } })
+app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
 app.whenReady().then(async () => {
   ensureDirectories()
   if (process.platform === 'darwin') {
