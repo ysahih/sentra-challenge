@@ -25,7 +25,7 @@ function App() {
   const [transcripts, setTranscripts] = useState<Transcript[]>([])
   const [kbFiles, setKbFiles] = useState<KbFile[]>([])
   const [settings, setSettings] = useState<AppSettings>({
-    apiKey: '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',
+    apiKey: '',
     kbFolderPath: '',
   })
 
