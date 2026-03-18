@@ -95,8 +95,10 @@ ipcMain.handle('detect-meeting', async () => {
 
 ipcMain.handle('check-whisper', async () => {
   try {
-    const { nodewhisper } = await import('nodejs-whisper')
-    return { available: true }
+    // Check if nodejs-whisper is in node_modules
+    const whisperPath = path.join(process.env.APP_ROOT!, 'node_modules', 'nodejs-whisper')
+    const available = fs.existsSync(whisperPath)
+    return { available }
   } catch {
     return { available: false }
   }

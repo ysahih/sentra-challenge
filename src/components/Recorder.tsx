@@ -60,7 +60,7 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
   const cleanupAudio = () => {
     micStreamRef.current?.getTracks().forEach((t) => t.stop())
     processorRef.current?.disconnect()
-    audioContextRef.current?.close().catch(() => {})
+    audioContextRef.current?.close().catch(() => { })
     micStreamRef.current = null
     processorRef.current = null
     audioContextRef.current = null
@@ -282,9 +282,9 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
           className={`mode-btn ${useLocal ? 'active' : ''}`}
           onClick={() => setUseLocal(true)}
           disabled={!whisperAvailable}
-          title={!whisperAvailable ? 'Local Whisper not available' : ''}
+          title={!whisperAvailable ? 'Downloads model on first use' : ''}
         >
-          💻 Local (Whisper){!whisperAvailable ? ' — installing...' : ''}
+          💻 Local (Whisper){!whisperAvailable ? ' — click to setup' : ''}
         </button>
       </div>
 
