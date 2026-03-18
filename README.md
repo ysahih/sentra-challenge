@@ -2,6 +2,8 @@
 
 A desktop Electron app for meeting transcription and deep research, built with React + TypeScript for the Sentra engineering challenge.
 
+**Cloud or on-device** — transcribe with OpenRouter (GPT-4o) or run **Local Whisper** entirely on your machine. No API key required for private, offline transcription.
+
 ## Demo
 
 > Record → Transcribe → Research → Understand
@@ -10,8 +12,9 @@ A desktop Electron app for meeting transcription and deep research, built with R
 
 ### Core
 - **One-click recording** — single Start/Stop button captures microphone audio
-- **Automatic transcription** — powered by OpenRouter + GPT-4o Audio Preview
-- **Speaker detection** — AI identifies and labels multiple speakers in recordings
+- **Automatic transcription** — **Cloud** (OpenRouter + GPT-4o) or **On-device** (Local Whisper, no API key)
+- **Live transcription** — see words appear in real time as you record
+- **Speaker detection** — GPT-4o labels speakers, or AssemblyAI for full diarization
 - **Deep Research** — Claude-powered chat to query all your transcripts and documents
 - **Knowledge Base** — point to any folder of `.md` or `.txt` files as context
 - **Auto-save** — all transcripts saved locally to `~/Documents/SentraApp/`
@@ -29,24 +32,25 @@ npm install
 npm run dev
 ```
 
-Go to **Settings** → enter your OpenRouter API key → start recording.
+**On-device:** Just start recording — Local Whisper runs entirely on your machine, no API key needed.
 
-**OpenRouter API key** handles both transcription and Claude chat in one key.
+**Cloud:** Go to **Settings** → enter your OpenRouter API key → choose Cloud mode. OpenRouter handles transcription and Claude research chat.
 
 ## Architecture
 
 ```
 Electron (Main Process)
 ├── Audio: PCM capture via ScriptProcessorNode → WAV encoding in renderer
-├── Transcription: OpenRouter gpt-4o-audio-preview (WAV format)
+├── Transcription: OpenRouter gpt-4o-audio-preview (cloud) OR nodejs-whisper (on-device)
+├── Speaker diarization: AssemblyAI (optional)
 ├── Research: OpenRouter anthropic/claude-sonnet-4-5
 ├── Meeting Detection: ps aux + desktopCapturer window titles
 └── Storage: Local JSON files in ~/Documents/SentraApp/
 
 React (Renderer Process)
-├── Recorder — mic capture, WAV encoding, timer, meeting banner
+├── Recorder — mic capture, WAV encoding, live transcript, meeting banner
 ├── Research — Claude chat with transcript + KB context
-└── Settings — API key, KB folder selection
+└── Settings — OpenRouter key, AssemblyAI key (optional), KB folder
 ```
 
 ## Answers to Ashwin's Bonus Questions
@@ -106,15 +110,15 @@ Electron's `desktopCapturer` + `setDisplayMediaRequestHandler` with `audio: 'loo
 ## Tech Stack
 
 - **Electron** + **Vite** + **React** + **TypeScript**
-- **OpenRouter** (single API key for everything)
-  - `openai/gpt-4o-audio-preview` — transcription
-  - `anthropic/claude-sonnet-4-5` — research chat
+- **Transcription:** Cloud (OpenRouter `gpt-4o-audio-preview`) or **On-device** (`nodejs-whisper`)
+- **Research:** OpenRouter `anthropic/claude-sonnet-4-5` (optional)
+- **Speaker diarization:** AssemblyAI (optional)
 - **Web Audio API** — PCM capture + WAV encoding (no ffmpeg dependency)
 - Local JSON storage
 
 ## What I'd Build Next
 
-1. Real-time transcription (chunk audio every 10s, stream to UI)
+1. ~~Real-time transcription~~ ✓ live stream implemented
 2. Google Calendar integration for auto-titling
 3. Action item extraction → Linear ticket creation
 4. Speaker diarization using a dedicated model (pyannote.audio via Python sidecar)
