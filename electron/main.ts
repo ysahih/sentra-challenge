@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, systemPreferences, session, deskto
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs'
-import { exec } from 'node:child_process'
+import { exec, execSync } from 'node:child_process'
 import { promisify } from 'node:util'
 
 const execAsync = promisify(exec)
@@ -106,6 +106,18 @@ ipcMain.handle('check-whisper', async () => {
 
 ipcMain.handle('transcribe-local', async (_event, base64Audio: string) => {
   try {
+    // Fix for Electron: shelljs (used by nodejs-whisper for model download) needs execPath
+    // set to the system Node binary; Electron's process.execPath points to the Electron binary
+    if (process.versions.electron) {
+      try {
+        const shell = await import('shelljs')
+        if (!shell.default.config.execPath) {
+          const nodePath = execSync('which node', { encoding: 'utf8' }).trim()
+          if (nodePath) shell.default.config.execPath = nodePath
+        }
+      } catch (_) { /* fallback: may fail during model download */ }
+    }
+
     const audioData = base64Audio.includes(',') ? base64Audio.split(',')[1] : base64Audio
     const audioBuffer = Buffer.from(audioData, 'base64')
 

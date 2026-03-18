@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+dist-electron
 *.local
 
 # Editor directories and files
@@ -23,3 +24,10 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# Design reference - do not commit (no files from Frontend-v2 should leak)
+Frontend-v2/
+frontend-v2/
+frontend-v2-reference/
+**/Frontend-v2/
+**/frontend-v2/
