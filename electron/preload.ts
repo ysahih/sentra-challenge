@@ -9,18 +9,15 @@ contextBridge.exposeInMainWorld('electron', {
     ipcRenderer.invoke('transcribe-audio', base64Audio, apiKey, meetingApp),
   transcribeChunk: (base64Audio: string, apiKey: string, useLocal: boolean) =>
     ipcRenderer.invoke('transcribe-chunk', base64Audio, apiKey, useLocal),
-  saveTranscript: (text: string, meetingApp?: string) =>
-    ipcRenderer.invoke('save-transcript', text, meetingApp),
+  diarizeAudio: (base64Audio: string, assemblyKey: string) =>
+    ipcRenderer.invoke('diarize-audio', base64Audio, assemblyKey),
+  saveTranscript: (text: string, meetingApp?: string, utterances?: any[]) =>
+    ipcRenderer.invoke('save-transcript', text, meetingApp, utterances),
   loadTranscripts: () => ipcRenderer.invoke('load-transcripts'),
   selectKbFolder: () => ipcRenderer.invoke('select-kb-folder'),
   loadKbFiles: (folderPath: string) => ipcRenderer.invoke('load-kb-files', folderPath),
-  claudeChat: (
-    message: string,
-    transcripts: any[],
-    kbFiles: any[],
-    history: any[],
-    apiKey: string,
-  ) => ipcRenderer.invoke('claude-chat', message, transcripts, kbFiles, history, apiKey),
+  claudeChat: (message: string, transcripts: any[], kbFiles: any[], history: any[], apiKey: string) =>
+    ipcRenderer.invoke('claude-chat', message, transcripts, kbFiles, history, apiKey),
   saveSettings: (settings: any) => ipcRenderer.invoke('save-settings', settings),
   loadSettings: () => ipcRenderer.invoke('load-settings'),
 })

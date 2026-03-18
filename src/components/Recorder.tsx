@@ -7,6 +7,8 @@ type RecorderProps = {
   transcripts: Transcript[]
 }
 
+type Utterance = { speaker: string; text: string; start: number; end: number }
+
 export default function Recorder({ settings, onTranscriptsUpdate, transcripts }: RecorderProps) {
   const [isRecording, setIsRecording] = useState(false)
   const [elapsed, setElapsed] = useState(0)
@@ -15,6 +17,7 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
   const [meetingDetected, setMeetingDetected] = useState<string[]>([])
   const [activeMeetingApp, setActiveMeetingApp] = useState<string | undefined>(undefined)
   const [useLocal, setUseLocal] = useState(false)
+  const [useDiarization, setUseDiarization] = useState(false)
   const [whisperAvailable, setWhisperAvailable] = useState(false)
   const [liveTranscript, setLiveTranscript] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
@@ -30,14 +33,10 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
   const liveTranscriptRef = useRef<string>('')
   const sampleRateRef = useRef<number>(44100)
 
-  // Check whisper availability on mount
   useEffect(() => {
-    window.electron.checkWhisper().then((result) => {
-      setWhisperAvailable(result.available)
-    })
+    window.electron.checkWhisper().then((result) => setWhisperAvailable(result.available))
   }, [])
 
-  // Poll for meeting detection every 5 seconds
   useEffect(() => {
     const checkMeeting = async () => {
       const result = await window.electron.detectMeeting()
@@ -60,7 +59,7 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
   const cleanupAudio = () => {
     micStreamRef.current?.getTracks().forEach((t) => t.stop())
     processorRef.current?.disconnect()
-    audioContextRef.current?.close().catch(() => { })
+    audioContextRef.current?.close().catch(() => {})
     micStreamRef.current = null
     processorRef.current = null
     audioContextRef.current = null
@@ -131,30 +130,23 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
     })
   }
 
-  // Stream chunk every 5 seconds during recording
   const startStreamingChunks = () => {
     setIsStreaming(true)
     streamChunksRef.current = []
-
     streamingIntervalRef.current = setInterval(async () => {
       const chunks = [...streamChunksRef.current]
-      streamChunksRef.current = [] // reset for next chunk
-
+      streamChunksRef.current = []
       if (chunks.length === 0) return
-
       try {
         const base64 = await buildWavBase64(chunks, sampleRateRef.current)
         const result = useLocal
           ? await window.electron.transcribeLocal(base64)
           : await window.electron.transcribeChunk(base64, settings.apiKey, false)
-
         if (result.success && result.text) {
           liveTranscriptRef.current += result.text + ' '
           setLiveTranscript(liveTranscriptRef.current)
         }
-      } catch (e) {
-        console.error('Chunk transcription error:', e)
-      }
+      } catch (e) { console.error('Chunk error:', e) }
     }, 5000)
   }
 
@@ -208,7 +200,7 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
 
     setIsRecording(false)
     setIsStreaming(false)
-    setStatus('Processing final audio...')
+    setStatus('Processing audio...')
 
     const sampleRate = sampleRateRef.current
     const chunks = [...pcmChunksRef.current]
@@ -220,14 +212,29 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
     setIsTranscribing(true)
 
     try {
-      // Use accumulated live transcript + final pass
+      const base64 = await buildWavBase64(chunks, sampleRate)
+
+      // Speaker diarization path
+      if (useDiarization && settings.assemblyKey) {
+        setStatus('🎤 Identifying speakers via AssemblyAI...')
+        const result = await window.electron.diarizeAudio(base64, settings.assemblyKey)
+        if (result.success && result.text) {
+          await window.electron.saveTranscript(result.text, activeMeetingApp, result.utterances)
+          onTranscriptsUpdate()
+          setStatus('✅ Speaker diarization complete!')
+          setLiveTranscript('')
+          liveTranscriptRef.current = ''
+        } else {
+          setStatus(`❌ Diarization failed: ${result.error}`)
+        }
+        return
+      }
+
+      // Standard transcription path
       let finalText = liveTranscriptRef.current.trim()
 
       if (!finalText) {
-        // Fallback: transcribe full recording if streaming got nothing
-        setStatus('⏳ Transcribing full recording...')
-        const base64 = await buildWavBase64(chunks, sampleRate)
-
+        setStatus('⏳ Transcribing...')
         if (useLocal) {
           const result = await window.electron.transcribeLocal(base64)
           finalText = result.success ? result.text : ''
@@ -246,7 +253,7 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
         setStatus('⚠️ No speech detected.')
       }
     } catch (err: unknown) {
-      setStatus(`❌ Transcription failed: ${err instanceof Error ? err.message : String(err)}`)
+      setStatus(`❌ Failed: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setIsTranscribing(false)
     }
@@ -255,6 +262,12 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
   const formatTime = (s: number) =>
     `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`
 
+  const getSpeakerColor = (speaker: string) => {
+    const colors = ['#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6']
+    const index = speaker.charCodeAt(speaker.length - 1) % colors.length
+    return colors[index]
+  }
+
   return (
     <div className="page">
       <div className="page-header">
@@ -262,7 +275,6 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
         <p>Record and transcribe your meetings automatically</p>
       </div>
 
-      {/* Meeting Detection Banner */}
       {meetingDetected.length > 0 && (
         <div className="meeting-banner">
           <span className="meeting-dot"></span>
@@ -270,21 +282,24 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
         </div>
       )}
 
-      {/* Transcription Mode Toggle */}
       <div className="mode-toggle">
-        <button
-          className={`mode-btn ${!useLocal ? 'active' : ''}`}
-          onClick={() => setUseLocal(false)}
-        >
-          ☁️ Cloud (OpenRouter)
+        <button className={`mode-btn ${!useLocal ? 'active' : ''}`} onClick={() => setUseLocal(false)}>
+          ☁️ Cloud
         </button>
         <button
           className={`mode-btn ${useLocal ? 'active' : ''}`}
           onClick={() => setUseLocal(true)}
           disabled={!whisperAvailable}
-          title={!whisperAvailable ? 'Downloads model on first use' : ''}
         >
-          💻 Local (Whisper){!whisperAvailable ? ' — click to setup' : ''}
+          💻 Local Whisper
+        </button>
+        <button
+          className={`mode-btn ${useDiarization ? 'active' : ''}`}
+          onClick={() => setUseDiarization(!useDiarization)}
+          disabled={!settings.assemblyKey}
+          title={!settings.assemblyKey ? 'Add AssemblyAI key in Settings' : 'Speaker identification'}
+        >
+          👥 Speaker ID{!settings.assemblyKey ? ' — add key' : ''}
         </button>
       </div>
 
@@ -308,7 +323,6 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
 
         {status && <div className="status-msg">{status}</div>}
 
-        {/* Live streaming transcript */}
         {liveTranscript && (
           <div className="live-transcript">
             <div className="live-label">🎙 Live transcript</div>
@@ -330,8 +344,26 @@ export default function Recorder({ settings, onTranscriptsUpdate, transcripts }:
                 <div className="transcript-header">
                   <span className="transcript-date">{new Date(t.timestamp).toLocaleString()}</span>
                   {t.meetingApp && <span className="meeting-badge">{t.meetingApp}</span>}
+                  {t.utterances && t.utterances.length > 0 && (
+                    <span className="diarization-badge">👥 {new Set(t.utterances.map(u => u.speaker)).size} speakers</span>
+                  )}
                 </div>
-                <p className="transcript-text">{t.text}</p>
+
+                {/* Speaker diarization view */}
+                {t.utterances && t.utterances.length > 0 ? (
+                  <div className="utterances">
+                    {t.utterances.map((u, i) => (
+                      <div key={i} className="utterance">
+                        <span className="speaker-label" style={{ color: getSpeakerColor(u.speaker) }}>
+                          Speaker {u.speaker}
+                        </span>
+                        <span className="utterance-text">{u.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="transcript-text">{t.text}</p>
+                )}
               </div>
             ))}
           </div>

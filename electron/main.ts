@@ -91,14 +91,98 @@ ipcMain.handle('detect-meeting', async () => {
   } catch { return { isInMeeting: false, apps: [] } }
 })
 
-// ─── Local Whisper Transcription ──────────────────────────────────────────────
+// ─── AssemblyAI Speaker Diarization ──────────────────────────────────────────
+
+ipcMain.handle('diarize-audio', async (_event, base64Audio: string, assemblyKey: string) => {
+  try {
+    const audioData = base64Audio.includes(',') ? base64Audio.split(',')[1] : base64Audio
+    const audioBuffer = Buffer.from(audioData, 'base64')
+
+    console.log('Starting AssemblyAI diarization, audio size:', audioBuffer.length)
+
+    // Step 1: Upload audio to AssemblyAI
+    const uploadResponse = await fetch('https://api.assemblyai.com/v2/upload', {
+      method: 'POST',
+      headers: {
+        'Authorization': assemblyKey,
+        'Content-Type': 'application/octet-stream',
+      },
+      body: audioBuffer,
+    })
+
+    if (!uploadResponse.ok) {
+      const err = await uploadResponse.text()
+      throw new Error(`Upload failed: ${err}`)
+    }
+
+    const { upload_url } = await uploadResponse.json()
+    console.log('Audio uploaded:', upload_url)
+
+    // Step 2: Request transcription with speaker diarization
+    const transcriptResponse = await fetch('https://api.assemblyai.com/v2/transcript', {
+      method: 'POST',
+      headers: {
+        'Authorization': assemblyKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        audio_url: upload_url,
+        speaker_labels: true,
+        speakers_expected: 2,
+        speech_models: ["universal-2"]
+      }),
+    })
+
+    if (!transcriptResponse.ok) {
+      const err = await transcriptResponse.text()
+      throw new Error(`Transcript request failed: ${err}`)
+    }
+
+    const { id: transcriptId } = await transcriptResponse.json()
+    console.log('Transcript ID:', transcriptId)
+
+    // Step 3: Poll for completion
+    let attempts = 0
+    while (attempts < 60) {
+      await new Promise((r) => setTimeout(r, 2000))
+      attempts++
+
+      const pollResponse = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}`, {
+        headers: { 'Authorization': assemblyKey },
+      })
+
+      const result = await pollResponse.json()
+      console.log('Poll status:', result.status, 'attempt:', attempts)
+
+      if (result.status === 'completed') {
+        // Format with speaker labels
+        if (result.utterances && result.utterances.length > 0) {
+          const formatted = result.utterances
+            .map((u: { speaker: string; text: string }) => `Speaker ${u.speaker}: ${u.text}`)
+            .join('\n')
+          return { success: true, text: formatted, utterances: result.utterances }
+        }
+        return { success: true, text: result.text || '', utterances: [] }
+      }
+
+      if (result.status === 'error') {
+        throw new Error(`Transcription error: ${result.error}`)
+      }
+    }
+
+    throw new Error('Transcription timed out after 2 minutes')
+  } catch (error) {
+    console.error('Diarization error:', error)
+    return { success: false, error: String(error), text: '' }
+  }
+})
+
+// ─── Local Whisper ────────────────────────────────────────────────────────────
 
 ipcMain.handle('check-whisper', async () => {
   try {
-    // Check if nodejs-whisper is in node_modules
     const whisperPath = path.join(process.env.APP_ROOT!, 'node_modules', 'nodejs-whisper')
-    const available = fs.existsSync(whisperPath)
-    return { available }
+    return { available: fs.existsSync(whisperPath) }
   } catch {
     return { available: false }
   }
@@ -106,8 +190,6 @@ ipcMain.handle('check-whisper', async () => {
 
 ipcMain.handle('transcribe-local', async (_event, base64Audio: string) => {
   try {
-    // Fix for Electron: shelljs (used by nodejs-whisper for model download) needs execPath
-    // set to the system Node binary; Electron's process.execPath points to the Electron binary
     if (process.versions.electron) {
       try {
         const shell = await import('shelljs')
@@ -115,13 +197,11 @@ ipcMain.handle('transcribe-local', async (_event, base64Audio: string) => {
           const nodePath = execSync('which node', { encoding: 'utf8' }).trim()
           if (nodePath) shell.default.config.execPath = nodePath
         }
-      } catch (_) { /* fallback: may fail during model download */ }
+      } catch (_) {}
     }
 
     const audioData = base64Audio.includes(',') ? base64Audio.split(',')[1] : base64Audio
     const audioBuffer = Buffer.from(audioData, 'base64')
-
-    // Save WAV temporarily
     const tmpPath = path.join(STORAGE_DIR, `tmp_${Date.now()}.wav`)
     fs.writeFileSync(tmpPath, audioBuffer)
 
@@ -129,30 +209,22 @@ ipcMain.handle('transcribe-local', async (_event, base64Audio: string) => {
     const result = await nodewhisper(tmpPath, {
       modelName: 'base.en',
       autoDownloadModelName: 'base.en',
-      whisperOptions: {
-        outputInText: true,
-        translateToEnglish: false,
-        wordTimestamps: false,
-      },
+      whisperOptions: { outputInText: true, translateToEnglish: false, wordTimestamps: false },
     })
 
-    // Cleanup temp file
     fs.unlinkSync(tmpPath)
-
     const text = typeof result === 'string' ? result : result?.map((r: any) => r.speech).join(' ')
     return { success: true, text: text?.trim() || '' }
   } catch (error) {
-    console.error('Local whisper error:', error)
     return { success: false, error: String(error) }
   }
 })
 
-// ─── OpenRouter Transcription (fallback) ─────────────────────────────────────
+// ─── OpenRouter Transcription ─────────────────────────────────────────────────
 
 ipcMain.handle('transcribe-audio', async (_event, base64Audio: string, apiKey: string, meetingApp?: string) => {
   try {
     const audioData = base64Audio.includes(',') ? base64Audio.split(',')[1] : base64Audio
-    console.log('Using API key:', apiKey ? apiKey.substring(0, 20) + '...' : 'EMPTY')
 
     const speakerPrompt = meetingApp
       ? `Transcribe this audio from a ${meetingApp} meeting. Label different speakers as "Speaker 1:", "Speaker 2:", etc. Return only the transcription.`
@@ -179,7 +251,6 @@ ipcMain.handle('transcribe-audio', async (_event, base64Audio: string, apiKey: s
     })
 
     const rawText = await response.text()
-    console.log('Transcription status:', response.status)
     if (!response.ok) throw new Error(`API error ${response.status}: ${rawText.substring(0, 300)}`)
     const data = JSON.parse(rawText)
     if (data.error) throw new Error(JSON.stringify(data.error))
@@ -190,20 +261,12 @@ ipcMain.handle('transcribe-audio', async (_event, base64Audio: string, apiKey: s
   }
 })
 
-// ─── Streaming chunk transcription ───────────────────────────────────────────
-// Called every 5s with a chunk — sends result back via IPC event
+// ─── Streaming chunk ──────────────────────────────────────────────────────────
 
 ipcMain.handle('transcribe-chunk', async (_event, base64Audio: string, apiKey: string, useLocal: boolean) => {
   try {
-    if (useLocal) {
-      const result = await new Promise<{ success: boolean; text: string; error?: string }>((resolve) => {
-        ipcMain.emit('transcribe-local', { sender: { send: () => {} } }, base64Audio)
-        resolve({ success: true, text: '' })
-      })
-      return result
-    }
+    if (useLocal) return { success: true, text: '' }
 
-    // Use OpenRouter for chunk
     const audioData = base64Audio.includes(',') ? base64Audio.split(',')[1] : base64Audio
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -219,7 +282,7 @@ ipcMain.handle('transcribe-chunk', async (_event, base64Audio: string, apiKey: s
           role: 'user',
           content: [
             { type: 'input_audio', input_audio: { data: audioData, format: 'wav' } },
-            { type: 'text', text: 'Transcribe this audio chunk exactly. Return only the words spoken, nothing else.' },
+            { type: 'text', text: 'Transcribe this audio chunk exactly. Return only the words spoken.' },
           ],
         }],
       }),
@@ -227,8 +290,7 @@ ipcMain.handle('transcribe-chunk', async (_event, base64Audio: string, apiKey: s
 
     if (!response.ok) return { success: false, text: '', error: `${response.status}` }
     const data = await response.json()
-    const text = data.choices?.[0]?.message?.content?.trim() || ''
-    return { success: true, text }
+    return { success: true, text: data.choices?.[0]?.message?.content?.trim() || '' }
   } catch (error) {
     return { success: false, text: '', error: String(error) }
   }
@@ -236,11 +298,17 @@ ipcMain.handle('transcribe-chunk', async (_event, base64Audio: string, apiKey: s
 
 // ─── Save Transcript ──────────────────────────────────────────────────────────
 
-ipcMain.handle('save-transcript', async (_event, text: string, meetingApp?: string) => {
+ipcMain.handle('save-transcript', async (_event, text: string, meetingApp?: string, utterances?: any[]) => {
   try {
     ensureDirectories()
     const timestamp = new Date().toISOString()
-    const data = { id: Date.now().toString(), timestamp, text: String(text), meetingApp: meetingApp || null }
+    const data = {
+      id: Date.now().toString(),
+      timestamp,
+      text: String(text),
+      meetingApp: meetingApp || null,
+      utterances: utterances || null,
+    }
     const filename = `transcript_${timestamp.replace(/[:.]/g, '-')}.json`
     fs.writeFileSync(path.join(TRANSCRIPTS_DIR, filename), JSON.stringify(data, null, 2))
     return true
@@ -262,6 +330,7 @@ ipcMain.handle('load-transcripts', async () => {
             timestamp: String(parsed.timestamp || new Date().toISOString()),
             text: typeof parsed.text === 'string' ? parsed.text : String(parsed.text),
             meetingApp: parsed.meetingApp || null,
+            utterances: parsed.utterances || null,
           }
         } catch { return null }
       })
@@ -342,7 +411,7 @@ ipcMain.handle('save-settings', async (_event, settings: Record<string, string>)
 })
 
 ipcMain.handle('load-settings', async () => {
-  const defaults = { apiKey: '', kbFolderPath: '', useLocalWhisper: 'false' }
+  const defaults = { apiKey: '', assemblyKey: '', kbFolderPath: '', useLocalWhisper: 'false' }
   try {
     if (fs.existsSync(SETTINGS_PATH)) return { ...defaults, ...JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8')) }
   } catch {}
