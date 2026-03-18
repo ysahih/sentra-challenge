@@ -17,9 +17,9 @@ export default function Settings({ settings, onSave }: Props) {
   }
 
   const selectKbFolder = async () => {
-    const result = await window.electronAPI.selectKbFolder()
-    if (result.success) {
-      setForm((prev) => ({ ...prev, kbFolderPath: result.path }))
+    const result = await window.electron.selectKbFolder()
+    if (result) {
+      setForm((prev) => ({ ...prev, kbFolderPath: result }))
     }
   }
 
@@ -27,31 +27,19 @@ export default function Settings({ settings, onSave }: Props) {
     <div className="page">
       <div className="page-header">
         <h1>Settings</h1>
-        <p>Configure your API keys and knowledge base</p>
+        <p>Configure your API key and knowledge base</p>
       </div>
 
       <div className="settings-form">
         <div className="setting-group">
-          <h3>🤖 Anthropic (Claude)</h3>
-          <p className="setting-desc">Used for the Deep Research chat module</p>
+          <h3>🔑 OpenRouter API Key</h3>
+          <p className="setting-desc">Used for both transcription and Claude research chat</p>
           <input
             type="password"
             className="setting-input"
-            placeholder="sk-ant-..."
-            value={form.anthropicKey}
-            onChange={(e) => setForm((prev) => ({ ...prev, anthropicKey: e.target.value }))}
-          />
-        </div>
-
-        <div className="setting-group">
-          <h3>🎙️ OpenAI (Whisper)</h3>
-          <p className="setting-desc">Used for audio transcription</p>
-          <input
-            type="password"
-            className="setting-input"
-            placeholder="sk-..."
-            value={form.openaiKey}
-            onChange={(e) => setForm((prev) => ({ ...prev, openaiKey: e.target.value }))}
+            placeholder="sk-or-v1-..."
+            value={form.apiKey}
+            onChange={(e) => setForm((prev) => ({ ...prev, apiKey: e.target.value }))}
           />
         </div>
 

@@ -1,32 +1,22 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-contextBridge.exposeInMainWorld('electronAPI', {
-  // Recording
-  startRecording: () => ipcRenderer.invoke('start-recording'),
-  stopRecording: () => ipcRenderer.invoke('stop-recording'),
-
-  // Transcription
-  transcribeAudio: (audioPath: string, apiKey: string) =>
-    ipcRenderer.invoke('transcribe-audio', audioPath, apiKey),
-
-  // Transcripts
+contextBridge.exposeInMainWorld('electron', {
+  getDesktopSources: () => ipcRenderer.invoke('get-desktop-sources'),
+  detectMeeting: () => ipcRenderer.invoke('detect-meeting'),
+  transcribeAudio: (base64Audio: string, apiKey: string, meetingApp?: string) =>
+    ipcRenderer.invoke('transcribe-audio', base64Audio, apiKey, meetingApp),
+  saveTranscript: (text: string, meetingApp?: string) =>
+    ipcRenderer.invoke('save-transcript', text, meetingApp),
   loadTranscripts: () => ipcRenderer.invoke('load-transcripts'),
-
-  // Knowledge Base
   selectKbFolder: () => ipcRenderer.invoke('select-kb-folder'),
   loadKbFiles: (folderPath: string) => ipcRenderer.invoke('load-kb-files', folderPath),
-
-  // Claude Chat
-  claudeChat: (params: {
-    message: string
-    transcripts: Array<{ text: string; timestamp: string }>
-    kbFiles: Array<{ name: string; content: string }>
-    history: Array<{ role: string; content: string }>
-    apiKey: string
-  }) => ipcRenderer.invoke('claude-chat', params),
-
-  // Settings
-  saveSettings: (settings: Record<string, string>) =>
-    ipcRenderer.invoke('save-settings', settings),
+  claudeChat: (
+    message: string,
+    transcripts: any[],
+    kbFiles: any[],
+    history: any[],
+    apiKey: string,
+  ) => ipcRenderer.invoke('claude-chat', message, transcripts, kbFiles, history, apiKey),
+  saveSettings: (settings: any) => ipcRenderer.invoke('save-settings', settings),
   loadSettings: () => ipcRenderer.invoke('load-settings'),
 })

@@ -24,10 +24,10 @@ export default function Research({ settings, transcripts, kbFiles }: Props) {
 
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return
-    if (!settings.anthropicKey) {
+    if (!settings.apiKey) {
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: '⚠️ Please add your Anthropic API key in Settings first.' },
+        { role: 'assistant', content: '⚠️ Please add your OpenRouter API key in Settings first.' },
       ])
       return
     }
@@ -37,22 +37,22 @@ export default function Research({ settings, transcripts, kbFiles }: Props) {
     setMessages((prev) => [...prev, { role: 'user', content: userMessage }])
     setIsLoading(true)
 
-    const result = await window.electronAPI.claudeChat({
-      message: userMessage,
-      transcripts: transcripts.map((t) => ({ text: t.text, timestamp: t.timestamp })),
-      kbFiles,
-      history: messages,
-      apiKey: settings.anthropicKey,
-    })
-
-    setIsLoading(false)
-    if (result.success) {
-      setMessages((prev) => [...prev, { role: 'assistant', content: result.text }])
-    } else {
+    try {
+      const reply = await window.electron.claudeChat(
+        userMessage,
+        transcripts.map((t) => ({ text: t.text, timestamp: t.timestamp })),
+        kbFiles,
+        messages,
+        settings.apiKey,
+      )
+      setMessages((prev) => [...prev, { role: 'assistant', content: reply }])
+    } catch (err: unknown) {
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: `❌ Error: ${result.error}` },
+        { role: 'assistant', content: `❌ Error: ${err instanceof Error ? err.message : String(err)}` },
       ])
+    } finally {
+      setIsLoading(false)
     }
   }
 

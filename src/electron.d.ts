@@ -2,16 +2,23 @@ export {}
 
 declare global {
   interface Window {
-    electronAPI: {
-      startRecording: () => Promise<{ success: boolean; path?: string; error?: string }>
-      stopRecording: () => Promise<{ success: boolean; path?: string; error?: string }>
-      transcribeAudio: (path: string, apiKey: string) => Promise<{ success: boolean; text?: string; error?: string }>
-      loadTranscripts: () => Promise<{ success: boolean; transcripts: any[] }>
-      selectKbFolder: () => Promise<{ success: boolean; path?: string }>
-      loadKbFiles: (folderPath: string) => Promise<{ success: boolean; files: any[] }>
-      claudeChat: (params: any) => Promise<{ success: boolean; text?: string; error?: string }>
-      saveSettings: (settings: any) => Promise<{ success: boolean }>
-      loadSettings: () => Promise<{ success: boolean; settings: any }>
+    electron: {
+      getDesktopSources: () => Promise<Array<{ id: string; name: string }>>
+      detectMeeting: () => Promise<{ isInMeeting: boolean; apps: string[] }>
+      transcribeAudio: (base64Audio: string, apiKey: string, meetingApp?: string) => Promise<string>
+      saveTranscript: (text: string, meetingApp?: string) => Promise<boolean>
+      loadTranscripts: () => Promise<Array<{ id: string; timestamp: string; text: string; meetingApp?: string }>>
+      selectKbFolder: () => Promise<string | null>
+      loadKbFiles: (folderPath: string) => Promise<Array<{ name: string; content: string }>>
+      claudeChat: (
+        message: string,
+        transcripts: Array<{ text: string; timestamp: string; meetingApp?: string }>,
+        kbFiles: Array<{ name: string; content: string }>,
+        history: Array<{ role: string; content: string }>,
+        apiKey: string,
+      ) => Promise<string>
+      saveSettings: (settings: Record<string, string>) => Promise<boolean>
+      loadSettings: () => Promise<Record<string, string>>
     }
   }
 }
