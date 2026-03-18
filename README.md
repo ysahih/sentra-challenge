@@ -28,13 +28,55 @@ A desktop Electron app for meeting transcription and deep research, built with R
 ```bash
 git clone <repo>
 cd sentra-challenge
-npm install
+npm install   # for Local Whisper: install CMake + build tools first (see below)
 npm run dev
 ```
 
-**On-device:** Just start recording — Local Whisper runs entirely on your machine, no API key needed.
+**On-device:** Just start recording — Local Whisper runs entirely on your machine, no API key needed. See [Local Whisper setup](#local-whisper-on-device) below for build prerequisites.
 
 **Cloud:** Go to **Settings** → enter your OpenRouter API key → choose Cloud mode. OpenRouter handles transcription and Claude research chat.
+
+## Local Whisper (On-device)
+
+Local transcription uses `nodejs-whisper`, which compiles native bindings to [whisper.cpp](https://github.com/ggerganov/whisper.cpp). You need **CMake** and a C++ toolchain before `npm install`.
+
+### Prerequisites
+
+**macOS:**
+```bash
+# Xcode Command Line Tools (includes make, clang)
+xcode-select --install
+
+# CMake (via Homebrew)
+brew install cmake
+```
+
+**Linux (Ubuntu/Debian):**
+```bash
+sudo apt update
+sudo apt install build-essential cmake
+```
+
+**Windows:**
+- Install [CMake](https://cmake.org/download/)
+- Install [MinGW-w64](https://www.mingw-w64.org/) or [MSYS2](https://www.msys2.org/) (provides `make`, `gcc`)
+- Ensure `cmake` and `make` (or `mingw32-make`) are in your PATH
+
+### Install
+
+```bash
+npm install
+```
+
+The `nodejs-whisper` package will compile during install. If it fails, check that CMake and your build tools are correctly installed.
+
+### Model
+
+The app uses the `base.en` model. It **auto-downloads** on first use (~140MB) to `~/Documents/SentraApp/whisper-models/`. No manual download needed.
+
+### Verifying
+
+In the app, choose **Local Whisper** in the Recorder. If the button is disabled, the native module didn’t build — re-check prerequisites and run `npm install` again.
 
 ## Architecture
 
