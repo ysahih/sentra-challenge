@@ -21,6 +21,7 @@ export type AppSettings = {
   apiKey: string
   assemblyKey: string
   kbFolderPath: string
+  useLocalWhisper: boolean
 }
 
 function App() {
@@ -31,6 +32,7 @@ function App() {
     apiKey: '',
     assemblyKey: '',
     kbFolderPath: '',
+    useLocalWhisper: false,
   })
 
   const loadTranscripts = useCallback(async () => {
@@ -45,6 +47,7 @@ function App() {
         apiKey: result.apiKey || '',
         assemblyKey: result.assemblyKey || '',
         kbFolderPath: result.kbFolderPath || '',
+        useLocalWhisper: result.useLocalWhisper === 'true',
       })
       if (result.kbFolderPath) {
         const files = await window.electron.loadKbFiles(result.kbFolderPath)
@@ -60,7 +63,10 @@ function App() {
 
   const handleSettingsSave = async (newSettings: AppSettings) => {
     setSettings(newSettings)
-    await window.electron.saveSettings(newSettings as any)
+    await window.electron.saveSettings({
+      ...newSettings,
+      useLocalWhisper: String(newSettings.useLocalWhisper),
+    } as any)
     if (newSettings.kbFolderPath) {
       const files = await window.electron.loadKbFiles(newSettings.kbFolderPath)
       if (Array.isArray(files)) setKbFiles(files)

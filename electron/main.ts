@@ -197,7 +197,7 @@ ipcMain.handle('transcribe-local', async (_event, base64Audio: string) => {
           const nodePath = execSync('which node', { encoding: 'utf8' }).trim()
           if (nodePath) shell.default.config.execPath = nodePath
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
     const audioData = base64Audio.includes(',') ? base64Audio.split(',')[1] : base64Audio
@@ -209,7 +209,11 @@ ipcMain.handle('transcribe-local', async (_event, base64Audio: string) => {
     const result = await nodewhisper(tmpPath, {
       modelName: 'base.en',
       autoDownloadModelName: 'base.en',
-      whisperOptions: { outputInText: true, translateToEnglish: false, wordTimestamps: false },
+      whisperOptions: {
+        outputInText: true,
+        translateToEnglish: false,
+        wordTimestamps: false,
+      },
     })
 
     fs.unlinkSync(tmpPath)
@@ -414,7 +418,7 @@ ipcMain.handle('load-settings', async () => {
   const defaults = { apiKey: '', assemblyKey: '', kbFolderPath: '', useLocalWhisper: 'false' }
   try {
     if (fs.existsSync(SETTINGS_PATH)) return { ...defaults, ...JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8')) }
-  } catch {}
+  } catch { }
   return defaults
 })
 
